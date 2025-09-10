@@ -1,1 +1,9 @@
-Flaskgunicornplaywrightpandasgspreadoauth2clientPillowopenpyxltwocaptcha-python
+Flask
+gunicorn
+playwright
+pandas
+gspread
+oauth2client
+Pillow
+openpyxl
+twocaptcha-python
