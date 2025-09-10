@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # ==================================================================================
-# === SCRIPT FINAL: VERSIÓN ASÍNCRONA CON TAREAS EN SEGUNDO PLANO Y ESTADO EN VIVO ===
+# === SCRIPT FINAL: VERSIÓN OPTIMIZADA PARA SERVIDOR (CPU BAJO Y ALTA CONCURRENCIA) ===
 # ==================================================================================
 import time
 import pandas as pd
@@ -17,7 +17,7 @@ import asyncio
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask, render_template, jsonify, send_file
-import threading # Se importa para manejar tareas en segundo plano
+import threading
 import json
 
 # --- CONFIGURACIÓN ---
@@ -26,16 +26,13 @@ GOOGLE_CREDENTIALS_JSON_STR = os.environ.get('GOOGLE_CREDENTIALS_JSON')
 URL_CONSULTA = "https://portalpublico.runt.gov.co/#/consulta-vehiculo/consulta/consulta-ciudadana"
 GOOGLE_SHEET_NAME = "Vehiculos a Consultar RUNT"
 MAX_RETRIES = 3
-CONCURRENCY_LIMIT = 4
+# --- CAMBIO: Aumentamos la concurrencia para aprovechar el tiempo de red ---
+CONCURRENCY_LIMIT = 6 
 
 # --- ESTADO GLOBAL DE LA APLICACIÓN ---
-# Usamos un diccionario para mantener el estado del proceso en segundo plano
 status = {
-    "running": False,
-    "progress": 0,
-    "total": 0,
-    "output_file": None,
-    "error": None
+    "running": False, "progress": 0, "total": 0,
+    "output_file": None, "error": None
 }
 
 # --- INICIALIZACIÓN DE LA APLICACIÓN FLASK ---
@@ -45,6 +42,7 @@ async def consultar_vehiculo(page, placa, num_doc):
     captcha_id = None
     try:
         await page.goto(URL_CONSULTA, wait_until='domcontentloaded', timeout=15000)
+        
         await page.fill("//input[@formcontrolname='placa']", placa)
         await page.click("//mat-select[@formcontrolname='tipoDocumento']")
         await page.click("//mat-option//span[contains(text(), 'NIT')]")
@@ -54,14 +52,11 @@ async def consultar_vehiculo(page, placa, num_doc):
         captcha_img_element = page.locator("xpath=//img[contains(@src, 'data:image/png')]")
         screenshot_bytes = await captcha_img_element.screenshot()
         
+        # --- CAMBIO: Pipeline de procesamiento de imagen más rápido y ligero para el servidor ---
         image = Image.open(io.BytesIO(screenshot_bytes))
-        image = image.convert('L')
-        enhancer = ImageEnhance.Contrast(image)
-        image = enhancer.enhance(2.5)
-        enhancer = ImageEnhance.Sharpness(image)
-        image = enhancer.enhance(2.0)
+        image = image.convert('L') # 1. Convertir a escala de grises (rápido)
         threshold = 150 
-        image = image.point(lambda p: 0 if p < threshold else 255)
+        image = image.point(lambda p: 0 if p < threshold else 255) # 2. Binarización (más eficiente que el contraste/nitidez)
         
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
@@ -80,11 +75,10 @@ async def consultar_vehiculo(page, placa, num_doc):
             error_locator = page.locator("xpath=//div[contains(text(), 'código de verificación es incorrecto')]")
             await error_locator.wait_for(timeout=3500) 
             error_text = await error_locator.inner_text()
-            if captcha_id:
-                await asyncio.to_thread(solver.report, captcha_id, False)
+            if captcha_id: await asyncio.to_thread(solver.report, captcha_id, False)
             raise Exception("Error de CAPTCHA.")
         except PlaywrightTimeoutError:
-            pass # No error detected
+            pass
 
         await page.wait_for_selector("text=Información general del vehículo", timeout=12000)
         
@@ -108,6 +102,7 @@ async def consultar_vehiculo(page, placa, num_doc):
     except Exception as e:
         error_msg = str(e).split('\n')[0]
         return {"SOAT": "Error", "Limitaciones": "Error", "error": error_msg}
+
 
 async def process_vehicle_with_retries(browser, placa, num_doc, semaphore):
     async with semaphore:
@@ -159,9 +154,7 @@ async def run_process_async():
 
         df_resultados = pd.DataFrame(lista_resultados)
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        # --- CAMBIO IMPORTANTE: Guardar en una carpeta temporal ---
-        if not os.path.exists('tmp'):
-            os.makedirs('tmp')
+        if not os.path.exists('tmp'): os.makedirs('tmp')
         output_filename = f'tmp/resultados_consulta_{timestamp}.xlsx'
         df_resultados.to_excel(output_filename, index=False)
         
@@ -185,7 +178,6 @@ async def run_process_async():
         status["running"] = False
 
 def run_in_background():
-    # Crear un nuevo bucle de eventos para el hilo
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(run_process_async())
@@ -218,6 +210,5 @@ def download_file():
 
 # This block is needed for Render to start the web server
 if __name__ == '__main__':
-    # This part is for local testing and will not be used by Render
     app.run(debug=True)
 
