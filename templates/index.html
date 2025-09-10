@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Robot de Consulta RUNT</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Robot de Consulta RUNT</h1>
+        <p>Presiona el botón para iniciar la consulta de las placas desde la hoja de Google Sheets.</p>
+        
+        <button id="startButton">▶ Iniciar Consulta</button>
+        
+        <div id="progressContainer" class="hidden">
+            <p id="statusText">Iniciando...</p>
+            <div class="progressBar">
+                <div id="progressBarFill"></div>
+            </div>
+        </div>
+        
+        <div id="resultContainer" class="hidden">
+            <p>¡Informe listo!</p>
+            <a id="downloadLink" href="#" class="button">⬇ Descargar Informe</a>
+        </div>
+    </div>
+
+    <script>
+        const startButton = document.getElementById('startButton');
+        const progressContainer = document.getElementById('progressContainer');
+        const statusText = document.getElementById('statusText');
+        const progressBarFill = document.getElementById('progressBarFill');
+        const resultContainer = document.getElementById('resultContainer');
+        const downloadLink = document.getElementById('downloadLink');
+
+        startButton.addEventListener('click', () => {
+            startButton.disabled = true;
+            startButton.textContent = 'Procesando...';
+            progressContainer.classList.remove('hidden');
+            resultContainer.classList.add('hidden');
+            statusText.textContent = 'Iniciando el proceso en el servidor...';
+            progressBarFill.style.width = '0%';
+
+            // 1. Llama a la ruta para iniciar el scraper
+            fetch('/run');
+
+            // 2. Escucha el flujo de progreso
+            const eventSource = new EventSource('/progress');
+
+            eventSource.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+
+                // Actualizar texto de estado
+                statusText.textContent = data.status;
+
+                // Actualizar barra de progreso
+                if (data.progress !== undefined) {
+                    progressBarFill.style.width = data.progress + '%';
+                }
+
+                // Si el proceso ha terminado
+                if (data.file) {
+                    downloadLink.href = `/download/${data.file}`;
+                    resultContainer.classList.remove('hidden');
+                    startButton.disabled = false;
+                    startButton.textContent = '▶ Iniciar Consulta de Nuevo';
+                    eventSource.close(); // Cerramos la conexión
+                }
+                
+                // Si hubo un error
+                if (data.status.toLowerCase().includes('error')) {
+                    startButton.disabled = false;
+                    startButton.textContent = '▶ Reintentar Consulta';
+                    eventSource.close();
+                }
+            };
+
+            eventSource.onerror = () => {
+                statusText.textContent = 'Error de conexión con el servidor. Por favor, recarga la página.';
+                eventSource.close();
+            };
+        });
+    </script>
+</body>
+</html>

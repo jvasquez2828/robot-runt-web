@@ -1,0 +1,96 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;700&display=swap');
+
+body {
+    font-family: 'Roboto', sans-serif;
+    background-color: #f4f7f6;
+    color: #333;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+}
+
+.container {
+    background-color: white;
+    padding: 40px;
+    border-radius: 12px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.1);
+    text-align: center;
+    width: 90%;
+    max-width: 500px;
+}
+
+h1 {
+    color: #2c3e50;
+    margin-bottom: 10px;
+}
+
+p {
+    color: #555;
+    line-height: 1.6;
+    margin-bottom: 30px;
+}
+
+#startButton, .button {
+    background-color: #3498db;
+    color: white;
+    border: none;
+    padding: 15px 30px;
+    font-size: 16px;
+    font-weight: 700;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background-color 0.3s ease, transform 0.2s ease;
+    text-decoration: none;
+    display: inline-block;
+}
+
+#startButton:hover, .button:hover {
+    background-color: #2980b9;
+    transform: translateY(-2px);
+}
+
+#startButton:disabled {
+    background-color: #95a5a6;
+    cursor: not-allowed;
+    transform: none;
+}
+
+.hidden {
+    display: none;
+}
+
+#progressContainer {
+    margin-top: 30px;
+}
+
+.progressBar {
+    background-color: #ecf0f1;
+    border-radius: 8px;
+    overflow: hidden;
+    height: 25px;
+    width: 100%;
+}
+
+#progressBarFill {
+    background-color: #2ecc71;
+    height: 100%;
+    width: 0%;
+    transition: width 0.4s ease-in-out;
+    border-radius: 8px;
+}
+
+#statusText {
+    margin-bottom: 10px;
+    font-style: italic;
+    color: #7f8c8d;
+}
+
+#resultContainer {
+    margin-top: 20px;
+    padding: 20px;
+    background-color: #e8f6f3;
+    border: 1px solid #d1e8e2;
+    border-radius: 8px;
+}
