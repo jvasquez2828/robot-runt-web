@@ -4,83 +4,110 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Robot de Consulta RUNT</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
     <div class="container">
         <h1>Robot de Consulta RUNT</h1>
         <p>Presiona el botón para iniciar la consulta de las placas desde la hoja de Google Sheets.</p>
         
-        <button id="startButton">▶ Iniciar Consulta</button>
-        
-        <div id="progressContainer" class="hidden">
-            <p id="statusText">Iniciando...</p>
-            <div class="progressBar">
-                <div id="progressBarFill"></div>
+        <button id="startButton">Iniciar Consulta</button>
+
+        <div id="progress-container" class="hidden">
+            <p id="status-text">Iniciando el proceso en el servidor...</p>
+            <div class="progress-bar">
+                <div id="progress-bar-inner"></div>
             </div>
+            <p id="progress-label">0 / 0</p>
         </div>
-        
-        <div id="resultContainer" class="hidden">
-            <p>¡Informe listo!</p>
-            <a id="downloadLink" href="#" class="button">⬇ Descargar Informe</a>
+
+        <div id="result-container" class="hidden">
+            <p id="result-text">¡Proceso completado!</p>
+            <a id="downloadButton" class="button" href="#">Descargar Resultados</a>
         </div>
+
+        <p id="error-message" class="error-text hidden"></p>
     </div>
 
     <script>
         const startButton = document.getElementById('startButton');
-        const progressContainer = document.getElementById('progressContainer');
-        const statusText = document.getElementById('statusText');
-        const progressBarFill = document.getElementById('progressBarFill');
-        const resultContainer = document.getElementById('resultContainer');
-        const downloadLink = document.getElementById('downloadLink');
+        const progressContainer = document.getElementById('progress-container');
+        const statusText = document.getElementById('status-text');
+        const progressBarInner = document.getElementById('progress-bar-inner');
+        const progressLabel = document.getElementById('progress-label');
+        const resultContainer = document.getElementById('result-container');
+        const downloadButton = document.getElementById('downloadButton');
+        const errorMessage = document.getElementById('error-message');
+        
+        let statusInterval;
 
-        startButton.addEventListener('click', () => {
+        async function checkStatus() {
+            try {
+                const response = await fetch('/status');
+                if (!response.ok) {
+                    throw new Error('Error de conexión con el servidor.');
+                }
+                const data = await response.json();
+
+                if (data.error) {
+                    errorMessage.textContent = `Error: ${data.error}`;
+                    errorMessage.classList.remove('hidden');
+                    progressContainer.classList.add('hidden');
+                    startButton.disabled = false;
+                    startButton.textContent = 'Iniciar Consulta';
+                    clearInterval(statusInterval);
+                    return;
+                }
+
+                if (data.running) {
+                    statusText.textContent = `Procesando...`;
+                    const percentage = data.total > 0 ? (data.progress / data.total) * 100 : 0;
+                    progressBarInner.style.width = `${percentage}%`;
+                    progressLabel.textContent = `${data.progress} / ${data.total}`;
+                } else {
+                    if (data.output_file) {
+                        progressContainer.classList.add('hidden');
+                        resultContainer.classList.remove('hidden');
+                        downloadButton.href = '/download';
+                        startButton.disabled = false;
+                        startButton.textContent = 'Iniciar Nueva Consulta';
+                        clearInterval(statusInterval);
+                    }
+                }
+            } catch (error) {
+                errorMessage.textContent = error.message;
+                errorMessage.classList.remove('hidden');
+                progressContainer.classList.add('hidden');
+                startButton.disabled = false;
+                startButton.textContent = 'Reintentar';
+                clearInterval(statusInterval);
+            }
+        }
+
+        startButton.addEventListener('click', async () => {
             startButton.disabled = true;
             startButton.textContent = 'Procesando...';
             progressContainer.classList.remove('hidden');
             resultContainer.classList.add('hidden');
+            errorMessage.classList.add('hidden');
+            progressBarInner.style.width = '0%';
+            progressLabel.textContent = '0 / 0';
             statusText.textContent = 'Iniciando el proceso en el servidor...';
-            progressBarFill.style.width = '0%';
 
-            // 1. Llama a la ruta para iniciar el scraper
-            fetch('/run');
-
-            // 2. Escucha el flujo de progreso
-            const eventSource = new EventSource('/progress');
-
-            eventSource.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-
-                // Actualizar texto de estado
-                statusText.textContent = data.status;
-
-                // Actualizar barra de progreso
-                if (data.progress !== undefined) {
-                    progressBarFill.style.width = data.progress + '%';
+            try {
+                const response = await fetch('/start', { method: 'POST' });
+                if (!response.ok) {
+                    throw new Error('No se pudo iniciar el proceso.');
                 }
-
-                // Si el proceso ha terminado
-                if (data.file) {
-                    downloadLink.href = `/download/${data.file}`;
-                    resultContainer.classList.remove('hidden');
-                    startButton.disabled = false;
-                    startButton.textContent = '▶ Iniciar Consulta de Nuevo';
-                    eventSource.close(); // Cerramos la conexión
-                }
-                
-                // Si hubo un error
-                if (data.status.toLowerCase().includes('error')) {
-                    startButton.disabled = false;
-                    startButton.textContent = '▶ Reintentar Consulta';
-                    eventSource.close();
-                }
-            };
-
-            eventSource.onerror = () => {
-                statusText.textContent = 'Error de conexión con el servidor. Por favor, recarga la página.';
-                eventSource.close();
-            };
+                statusInterval = setInterval(checkStatus, 2000); // Check status every 2 seconds
+            } catch (error) {
+                errorMessage.textContent = error.message;
+                errorMessage.classList.remove('hidden');
+                startButton.disabled = false;
+                startButton.textContent = 'Reintentar';
+            }
         });
     </script>
 </body>
 </html>
+
