@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # ==================================================================================
-# === SCRIPT FINAL: VERSIÓN OPTIMIZADA PARA SERVIDOR (CPU BAJO Y ALTA CONCURRENCIA) ===
+# === SCRIPT FINAL: VERSIÓN ESTABLE Y RÁPIDA (RESTAURADA) PARA DESPLIEGUE WEB ===
 # ==================================================================================
 import time
 import pandas as pd
@@ -26,8 +26,8 @@ GOOGLE_CREDENTIALS_JSON_STR = os.environ.get('GOOGLE_CREDENTIALS_JSON')
 URL_CONSULTA = "https://portalpublico.runt.gov.co/#/consulta-vehiculo/consulta/consulta-ciudadana"
 GOOGLE_SHEET_NAME = "Vehiculos a Consultar RUNT"
 MAX_RETRIES = 3
-# --- CAMBIO: Aumentamos la concurrencia para aprovechar el tiempo de red ---
-CONCURRENCY_LIMIT = 6 
+# Límite de concurrencia optimizado para el servidor gratuito.
+CONCURRENCY_LIMIT = 4 
 
 # --- ESTADO GLOBAL DE LA APLICACIÓN ---
 status = {
@@ -41,6 +41,7 @@ app = Flask(__name__)
 async def consultar_vehiculo(page, placa, num_doc):
     captcha_id = None
     try:
+        # Usamos los timeouts agresivos que funcionaban bien.
         await page.goto(URL_CONSULTA, wait_until='domcontentloaded', timeout=15000)
         
         await page.fill("//input[@formcontrolname='placa']", placa)
@@ -52,11 +53,15 @@ async def consultar_vehiculo(page, placa, num_doc):
         captcha_img_element = page.locator("xpath=//img[contains(@src, 'data:image/png')]")
         screenshot_bytes = await captcha_img_element.screenshot()
         
-        # --- CAMBIO: Pipeline de procesamiento de imagen más rápido y ligero para el servidor ---
+        # Restauramos el pipeline de procesamiento de imagen que era más fiable.
         image = Image.open(io.BytesIO(screenshot_bytes))
-        image = image.convert('L') # 1. Convertir a escala de grises (rápido)
+        image = image.convert('L')
+        enhancer = ImageEnhance.Contrast(image)
+        image = enhancer.enhance(2.0)
+        enhancer = ImageEnhance.Sharpness(image)
+        image = enhancer.enhance(2.0)
         threshold = 150 
-        image = image.point(lambda p: 0 if p < threshold else 255) # 2. Binarización (más eficiente que el contraste/nitidez)
+        image = image.point(lambda p: 0 if p < threshold else 255)
         
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
@@ -84,18 +89,18 @@ async def consultar_vehiculo(page, placa, num_doc):
         
         soat_header_locator = page.locator("xpath=//mat-expansion-panel-header[contains(., 'Póliza SOAT')]")
         await soat_header_locator.click()
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.25)
         
         estado_locator = page.locator(f"xpath=//*[@id='cdk-accordion-child-1']/div/mat-card-content/div/mat-table/mat-row[1]/mat-cell[7]")
-        texto_completo_soat = (await estado_locator.inner_text(timeout=4000)).strip().lower()
+        texto_completo_soat = (await estado_locator.inner_text(timeout=5000)).strip().lower()
         soat_info = 'Vigente' if 'vigente' in texto_completo_soat and 'no vigente' not in texto_completo_soat else 'No Vigente'
         
         limitaciones_header_locator = page.locator("xpath=//mat-expansion-panel-header[contains(., 'Limitaciones a la Propiedad')]")
         await limitaciones_header_locator.click()
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.25)
         
         limitaciones_content_locator = limitaciones_header_locator.locator("xpath=./ancestor::mat-expansion-panel//div[contains(@class, 'mat-expansion-panel-content')]")
-        limitaciones_info = (await limitaciones_content_locator.inner_text(timeout=4000)).strip().replace('\n', ' ')
+        limitaciones_info = (await limitaciones_content_locator.inner_text(timeout=5000)).strip().replace('\n', ' ')
         
         return {"SOAT": soat_info, "Limitaciones": limitaciones_info, "error": None}
 
@@ -158,7 +163,6 @@ async def run_process_async():
         output_filename = f'tmp/resultados_consulta_{timestamp}.xlsx'
         df_resultados.to_excel(output_filename, index=False)
         
-        # Apply coloring
         red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
         green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
         wb = load_workbook(output_filename)
@@ -210,5 +214,4 @@ def download_file():
 
 # This block is needed for Render to start the web server
 if __name__ == '__main__':
-    app.run(debug=True)
-
+    app.run()
