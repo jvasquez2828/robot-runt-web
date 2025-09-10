@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # ==================================================================================
-# === SCRIPT FINAL: VERSIÓN WEB CON INTERFAZ DE PROGRESO (ESTABLE) ===
+# === SCRIPT FINAL: VERSIÓN WEB SIMPLIFICADA, ESTABLE Y RÁPIDA (BASADA EN CÓDIGO LOCAL FUNCIONAL) ===
 # ==================================================================================
 import time
 import pandas as pd
@@ -16,10 +16,8 @@ from datetime import datetime
 import asyncio
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from flask import Flask, render_template, jsonify, send_file
-import threading
+from flask import Flask, render_template, send_file, url_for, redirect
 import json
-from queue import Queue # Usamos una cola para la comunicación entre hilos
 
 # --- CONFIGURACIÓN ---
 API_KEY_2CAPTCHA = os.environ.get('API_KEY_2CAPTCHA')
@@ -31,10 +29,12 @@ CONCURRENCY_LIMIT = 4
 
 # --- INICIALIZACIÓN DE FLASK ---
 app = Flask(__name__)
-# Variables globales para manejar el estado del proceso en segundo plano
-scraper_thread = None
-progress_queue = None
+# Variable para almacenar el nombre del último archivo generado
+latest_file = None
 
+# ==================================================================================
+# === INICIO: NÚCLEO DEL ROBOT (LÓGICA EXACTA DE TU SCRIPT LOCAL FUNCIONAL) ===
+# ==================================================================================
 async def consultar_vehiculo(page, placa, num_doc):
     captcha_id = None
     try:
@@ -104,7 +104,7 @@ async def consultar_vehiculo(page, placa, num_doc):
         error_msg = str(e).split('\n')[0]
         return {"SOAT": "Error", "Limitaciones": "Error", "error": error_msg}
 
-async def process_vehicle_with_retries(browser, placa, num_doc, progress_queue, semaphore):
+async def process_vehicle_with_retries(browser, placa, num_doc, semaphore):
     async with semaphore:
         for attempt in range(MAX_RETRIES):
             context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36")
@@ -120,15 +120,14 @@ async def process_vehicle_with_retries(browser, placa, num_doc, progress_queue, 
             await context.close()
 
             if resultado['error'] is None:
-                progress_queue.put(1) # Envía 1 a la cola por cada éxito
                 return {'placa': placa, **resultado}
             else:
                 if attempt < MAX_RETRIES - 1: await asyncio.sleep(1.5)
-        
-        progress_queue.put(1) # Envía 1 también si todos los reintentos fallan, para que la barra avance
         return {'placa': placa, **resultado}
 
-async def main_scraper(progress_queue):
+async def run_main_process():
+    global latest_file
+    print("Iniciando proceso principal del scraper...")
     try:
         creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON_STR)
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict)
@@ -136,15 +135,14 @@ async def main_scraper(progress_queue):
         sheet = client.open(GOOGLE_SHEET_NAME).sheet1
         data = sheet.get_all_records()
         df_entrada = pd.DataFrame(data)
-        
-        progress_queue.put({'total': len(df_entrada)})
+        print(f"Se encontraron {len(df_entrada)} registros en Google Sheets.")
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
             tasks = []
             for _, fila in df_entrada.iterrows():
-                tasks.append(process_vehicle_with_retries(browser, fila['placa'], str(fila['numero_documento']), progress_queue, semaphore))
+                tasks.append(process_vehicle_with_retries(browser, fila['placa'], str(fila['numero_documento']), semaphore))
             
             lista_resultados = await asyncio.gather(*tasks)
             await browser.close()
@@ -155,7 +153,7 @@ async def main_scraper(progress_queue):
         output_filename = f'tmp/resultados_consulta_{timestamp}.xlsx'
         df_resultados.to_excel(output_filename, index=False)
         
-        # Colorear el archivo Excel
+        # Colorear el archivo
         red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
         green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
         wb = load_workbook(output_filename)
@@ -168,46 +166,52 @@ async def main_scraper(progress_queue):
             if celda_limitaciones.value and 'no tiene limitaciones a la propiedad' not in str(celda_limitaciones.value).lower() and 'No se encontró' not in str(celda_limitaciones.value): ws.cell(row=row, column=3).fill = red_fill
         wb.save(output_filename)
         
-        progress_queue.put({'done': output_filename})
+        latest_file = output_filename
+        print(f"Proceso completado. Archivo generado: {latest_file}")
+        return True
     except Exception as e:
-        progress_queue.put({'error': str(e)})
-
-def run_scraper_process(progress_queue):
-    asyncio.run(main_scraper(progress_queue))
+        print(f"Error CRÍTICO en el proceso principal: {e}")
+        latest_file = None
+        return False
+# ==================================================================================
+# === FIN: NÚCLEO DEL ROBOT ===
+# ==================================================================================
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
-@app.route("/start", methods=["POST"])
-def start_process():
-    global scraper_thread, progress_queue
-    if scraper_thread and scraper_thread.is_alive():
-        return jsonify({"error": "El proceso ya está en ejecución."}), 400
-    
-    progress_queue = Queue()
-    scraper_thread = threading.Thread(target=run_scraper_process, args=(progress_queue,))
-    scraper_thread.start()
-    return jsonify({"message": "Proceso iniciado."})
+@app.route("/run-process")
+def run_process_route():
+    # El bucle de eventos de asyncio no puede ser reiniciado en el mismo hilo.
+    # Corremos el proceso asíncrono y esperamos a que termine.
+    success = asyncio.run(run_main_process())
+    if success and latest_file:
+        # Redirigimos al usuario a la página de descarga.
+        return redirect(url_for('download_page'))
+    else:
+        # Si hay un error, lo mostramos.
+        return "Ocurrió un error durante el proceso. Por favor, revisa los logs en Render para más detalles.", 500
 
-@app.route("/status")
-def get_status():
-    global progress_queue
-    if not progress_queue:
-        return jsonify({"error": "El proceso no ha sido iniciado."}), 404
-        
-    messages = []
-    while not progress_queue.empty():
-        messages.append(progress_queue.get())
-    return jsonify(messages)
+@app.route("/download-page")
+def download_page():
+    # Una página intermedia que le dice al usuario que el archivo está listo.
+    return f"""
+    <html>
+        <head><title>Descarga Lista</title></head>
+        <body>
+            <h1>¡Proceso Completado!</h1>
+            <p>Tu archivo de resultados está listo para descargar.</p>
+            <a href="{url_for('download_file_route')}">Haga clic aquí para descargar el archivo Excel</a>
+        </body>
+    </html>
+    """
 
-@app.route("/download/<path:filename>")
-def download_file(filename):
-    # La ruta al archivo es relativa a la raíz del proyecto.
-    # El path completo en el servidor será algo como /tmp/nombre_archivo.xlsx
-    # Flask necesita el path relativo a la carpeta 'tmp'
-    file_path = os.path.basename(filename)
-    return send_file(os.path.join('tmp', file_path), as_attachment=True)
+@app.route("/download")
+def download_file_route():
+    if latest_file and os.path.exists(latest_file):
+        return send_file(latest_file, as_attachment=True)
+    return "No se encontró el archivo para descargar o el proceso aún no ha terminado.", 404
 
 # Este bloque es necesario para que Gunicorn (en Render) pueda encontrar la app.
 if __name__ == '__main__':
