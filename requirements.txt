@@ -6,4 +6,4 @@ gspread
 oauth2client
 Pillow
 openpyxl
-twocaptcha-python
+2captcha-python
