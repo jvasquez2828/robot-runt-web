@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # ==================================================================================
-# === APLICACIÓN WEB FLASK PARA DESPLIEGUE EN SERVIDOR ===
+# === SCRIPT FINAL: VERSIÓN ASÍNCRONA CON TAREAS EN SEGUNDO PLANO Y ESTADO EN VIVO ===
 # ==================================================================================
 import time
 import pandas as pd
@@ -16,26 +16,31 @@ from datetime import datetime
 import asyncio
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from flask import Flask, render_template, Response, stream_with_context, send_from_directory
-import threading
+from flask import Flask, render_template, jsonify, send_file
+import threading # Se importa para manejar tareas en segundo plano
 import json
 
-# --- CONFIGURACIÓN DESDE VARIABLES DE ENTORNO ---
-# Estas llaves ahora se leerán de forma segura desde el servidor.
-API_KEY_2CAPTCHA = os.environ.get("API_KEY_2CAPTCHA")
-GOOGLE_CREDENTIALS_JSON_STR = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-
+# --- CONFIGURACIÓN ---
+API_KEY_2CAPTCHA = os.environ.get('API_KEY_2CAPTCHA')
+GOOGLE_CREDENTIALS_JSON_STR = os.environ.get('GOOGLE_CREDENTIALS_JSON')
 URL_CONSULTA = "https://portalpublico.runt.gov.co/#/consulta-vehiculo/consulta/consulta-ciudadana"
 GOOGLE_SHEET_NAME = "Vehiculos a Consultar RUNT"
 MAX_RETRIES = 3
 CONCURRENCY_LIMIT = 4
-# Para el servidor, siempre se ejecutará en modo headless (segundo plano).
-HEADLESS_MODE = True
 
-# --- INICIALIZACIÓN DE FLASK ---
+# --- ESTADO GLOBAL DE LA APLICACIÓN ---
+# Usamos un diccionario para mantener el estado del proceso en segundo plano
+status = {
+    "running": False,
+    "progress": 0,
+    "total": 0,
+    "output_file": None,
+    "error": None
+}
+
+# --- INICIALIZACIÓN DE LA APLICACIÓN FLASK ---
 app = Flask(__name__)
 
-# --- LÓGICA DEL ROBOT (sin cambios, ya funciona) ---
 async def consultar_vehiculo(page, placa, num_doc):
     captcha_id = None
     try:
@@ -79,10 +84,10 @@ async def consultar_vehiculo(page, placa, num_doc):
                 await asyncio.to_thread(solver.report, captcha_id, False)
             raise Exception("Error de CAPTCHA.")
         except PlaywrightTimeoutError:
-            pass
+            pass # No error detected
 
         await page.wait_for_selector("text=Información general del vehículo", timeout=12000)
-
+        
         soat_header_locator = page.locator("xpath=//mat-expansion-panel-header[contains(., 'Póliza SOAT')]")
         await soat_header_locator.click()
         await asyncio.sleep(0.2)
@@ -104,151 +109,115 @@ async def consultar_vehiculo(page, placa, num_doc):
         error_msg = str(e).split('\n')[0]
         return {"SOAT": "Error", "Limitaciones": "Error", "error": error_msg}
 
-async def process_vehicle_with_retries(browser, placa, num_doc, progress_queue, semaphore):
+async def process_vehicle_with_retries(browser, placa, num_doc, semaphore):
     async with semaphore:
         for attempt in range(MAX_RETRIES):
             context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.102 Safari/537.36")
             page = await context.new_page()
             
             async def handle_route(route):
-                if route.request.resource_type in ["stylesheet", "font", "media", "image"] and not route.request.url.startswith("data:image"):
-                    await route.abort()
-                else:
-                    await route.continue_()
+                if route.request.resource_type in ["stylesheet", "font", "media"]: await route.abort()
+                elif route.request.resource_type == "image" and not route.request.url.startswith("data:image"): await route.abort()
+                else: await route.continue_()
             await page.route("**/*", handle_route)
 
             resultado = await consultar_vehiculo(page, placa, num_doc)
             await context.close()
 
             if resultado['error'] is None:
-                progress_queue.put(1)
+                status["progress"] += 1
                 return {'placa': placa, **resultado}
             else:
-                if attempt < MAX_RETRIES - 1:
-                    await asyncio.sleep(1.5)
+                if attempt < MAX_RETRIES - 1: await asyncio.sleep(1.5)
 
-        progress_queue.put(1)
+        status["progress"] += 1
         return {'placa': placa, **resultado}
 
-def run_scraper_process(progress_queue):
-    asyncio.run(main_scraper(progress_queue))
-
-async def main_scraper(progress_queue):
+async def run_process_async():
+    global status
     try:
-        if not API_KEY_2CAPTCHA or not GOOGLE_CREDENTIALS_JSON_STR:
-            raise ValueError("Las variables de entorno no están configuradas en el servidor.")
-            
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        # Carga las credenciales desde la variable de entorno (string)
         creds_dict = json.loads(GOOGLE_CREDENTIALS_JSON_STR)
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict)
         client = gspread.authorize(creds)
         sheet = client.open(GOOGLE_SHEET_NAME).sheet1
         data = sheet.get_all_records()
         df_entrada = pd.DataFrame(data)
         
-        total_count = len(df_entrada)
-        progress_queue.put({'total': total_count})
+        status["total"] = len(df_entrada)
         
-    except Exception as e:
-        progress_queue.put({'error': f"Error al leer Google Sheets: {e}"})
-        return
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
+            tasks = []
+            for _, fila in df_entrada.iterrows():
+                placa = fila['placa']
+                num_doc = str(fila['numero_documento'])
+                tasks.append(process_vehicle_with_retries(browser, placa, num_doc, semaphore))
+            
+            lista_resultados = await asyncio.gather(*tasks)
+            await browser.close()
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=HEADLESS_MODE)
-        semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
-        tasks = []
-        for _, fila in df_entrada.iterrows():
-            tasks.append(process_vehicle_with_retries(browser, fila['placa'], str(fila['numero_documento']), progress_queue, semaphore))
+        df_resultados = pd.DataFrame(lista_resultados)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        # --- CAMBIO IMPORTANTE: Guardar en una carpeta temporal ---
+        if not os.path.exists('tmp'):
+            os.makedirs('tmp')
+        output_filename = f'tmp/resultados_consulta_{timestamp}.xlsx'
+        df_resultados.to_excel(output_filename, index=False)
         
-        lista_resultados = await asyncio.gather(*tasks)
-        await browser.close()
-
-    df_resultados = pd.DataFrame(lista_resultados)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    # Guardamos el archivo en una carpeta temporal 'tmp' que es estándar en muchos servidores.
-    if not os.path.exists('tmp'):
-        os.makedirs('tmp')
-    filename = os.path.join('tmp', f'resultados_consulta_{timestamp}.xlsx')
-    df_resultados.to_excel(filename, index=False)
-    
-    try:
+        # Apply coloring
         red_fill = PatternFill(start_color='FFC7CE', end_color='FFC7CE', fill_type='solid')
         green_fill = PatternFill(start_color='C6EFCE', end_color='C6EFCE', fill_type='solid')
-        wb = load_workbook(filename)
+        wb = load_workbook(output_filename)
         ws = wb.active
         for row in range(2, ws.max_row + 1):
             celda_soat = ws.cell(row=row, column=2)
-            if celda_soat.value and 'Vigente' in str(celda_soat.value):
-                 celda_soat.fill = green_fill
-            elif celda_soat.value and celda_soat.value != 'Error':
-                celda_soat.fill = red_fill
-        wb.save(filename)
-    except Exception:
-        pass
+            celda_limitaciones = ws.cell(row=row, column=3)
+            if celda_soat.value and 'Vigente' in str(celda_soat.value): ws.cell(row=row, column=2).fill = green_fill
+            elif celda_soat.value and celda_soat.value != 'Error': ws.cell(row=row, column=2).fill = red_fill
+            if celda_limitaciones.value and 'no tiene limitaciones a la propiedad' not in str(celda_limitaciones.value).lower() and 'No se encontró' not in str(celda_limitaciones.value): ws.cell(row=row, column=3).fill = red_fill
+        wb.save(output_filename)
         
-    progress_queue.put({'done': os.path.basename(filename)})
+        status["output_file"] = output_filename
+    except Exception as e:
+        status["error"] = str(e)
+    finally:
+        status["running"] = False
 
-@app.route('/')
+def run_in_background():
+    # Crear un nuevo bucle de eventos para el hilo
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(run_process_async())
+    loop.close()
+
+@app.route("/")
 def index():
-    return render_template('index.html')
+    return render_template("index.html")
 
-scraper_thread = None
-progress_queue = None
-
-@app.route('/run')
-def run_scraper():
-    global scraper_thread, progress_queue
-    if scraper_thread and scraper_thread.is_alive():
-        return "El proceso ya está en ejecución.", 400
+@app.route("/start", methods=["POST"])
+def start_process():
+    global status
+    if status["running"]:
+        return jsonify({"error": "El proceso ya está en ejecución."}), 400
     
-    from queue import Queue
-    progress_queue = Queue()
-    
-    scraper_thread = threading.Thread(target=run_scraper_process, args=(progress_queue,))
-    scraper_thread.start()
-    return "Proceso iniciado.", 200
+    status = {"running": True, "progress": 0, "total": 0, "output_file": None, "error": None}
+    thread = threading.Thread(target=run_in_background)
+    thread.start()
+    return jsonify({"message": "Proceso iniciado."})
 
-@app.route('/progress')
-def progress():
-    def generate():
-        global progress_queue
-        if not progress_queue: return
-        completed_count = 0
-        total_count = 1
-        
-        while True:
-            try:
-                message = progress_queue.get()
-                if isinstance(message, dict):
-                    if 'total' in message: total_count = message['total']
-                    elif 'error' in message:
-                        yield f"data: {json.dumps({'status': message['error']})}\n\n"; break
-                    elif 'done' in message:
-                        yield f"data: {json.dumps({'status': '¡Proceso completado!', 'progress': 100, 'file': message['done']})}\n\n"; break
-                else:
-                    completed_count += message
-                    progress = (completed_count / total_count) * 100
-                    yield f"data: {json.dumps({'status': f'Procesando {completed_count}/{total_count}...', 'progress': progress})}\n\n"
-                time.sleep(0.1)
-            except Exception: break
-                
-    return Response(stream_with_context(generate()), mimetype='text/event-stream')
+@app.route("/status")
+def get_status():
+    return jsonify(status)
 
-@app.route('/download/<filename>')
-def download_file(filename):
-    # Los archivos se descargan desde la carpeta temporal 'tmp'.
-    return send_from_directory('tmp', filename, as_attachment=True)
+@app.route("/download")
+def download_file():
+    if status["output_file"] and os.path.exists(status["output_file"]):
+        return send_file(status["output_file"], as_attachment=True)
+    return jsonify({"error": "Archivo no encontrado."}), 404
 
-# Esta parte ya no se usa para iniciar el servidor en producción,
-# pero es útil para pruebas locales. El servidor usará 'gunicorn'.
+# This block is needed for Render to start the web server
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0')
-
-
-
-
-
-
-
+    # This part is for local testing and will not be used by Render
+    app.run(debug=True)
 
