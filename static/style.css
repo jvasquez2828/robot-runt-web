@@ -2,95 +2,107 @@
 
 body {
     font-family: 'Roboto', sans-serif;
-    background-color: #f4f7f6;
-    color: #333;
     display: flex;
     justify-content: center;
     align-items: center;
     height: 100vh;
     margin: 0;
+    background-color: #f0f2f5;
+    color: #333;
 }
 
 .container {
+    text-align: center;
     background-color: white;
-    padding: 40px;
+    padding: 40px 50px;
     border-radius: 12px;
     box-shadow: 0 8px 30px rgba(0, 0, 0, 0.1);
-    text-align: center;
     width: 90%;
     max-width: 500px;
 }
 
 h1 {
-    color: #2c3e50;
-    margin-bottom: 10px;
+    color: #1a2c4e;
+    margin-bottom: 15px;
 }
 
 p {
-    color: #555;
+    color: #666;
     line-height: 1.6;
     margin-bottom: 30px;
 }
 
-#startButton, .button {
-    background-color: #3498db;
+button, .button {
+    background: linear-gradient(90deg, #364a7c, #4a67a8);
     color: white;
     border: none;
     padding: 15px 30px;
-    font-size: 16px;
-    font-weight: 700;
     border-radius: 8px;
     cursor: pointer;
-    transition: background-color 0.3s ease, transform 0.2s ease;
+    font-size: 16px;
+    font-weight: bold;
     text-decoration: none;
     display: inline-block;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
 }
 
-#startButton:hover, .button:hover {
-    background-color: #2980b9;
+button:hover, .button:hover {
     transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
 }
 
-#startButton:disabled {
-    background-color: #95a5a6;
+button:disabled {
+    background: #ccc;
     cursor: not-allowed;
-    transform: none;
+    transform: translateY(0);
+    box-shadow: none;
 }
 
 .hidden {
     display: none;
 }
 
-#progressContainer {
+#progress-container {
     margin-top: 30px;
 }
 
-.progressBar {
-    background-color: #ecf0f1;
+.progress-bar {
+    width: 100%;
+    background-color: #e0e0e0;
     border-radius: 8px;
     overflow: hidden;
-    height: 25px;
-    width: 100%;
+    margin: 15px 0 10px;
 }
 
-#progressBarFill {
-    background-color: #2ecc71;
-    height: 100%;
+#progress-bar-inner {
+    height: 20px;
     width: 0%;
+    background: linear-gradient(90deg, #4caf50, #81c784);
+    border-radius: 8px;
     transition: width 0.4s ease-in-out;
-    border-radius: 8px;
 }
 
-#statusText {
-    margin-bottom: 10px;
-    font-style: italic;
-    color: #7f8c8d;
+#progress-label {
+    font-size: 14px;
+    color: #555;
+    margin: 0;
 }
 
-#resultContainer {
+#result-container {
+    margin-top: 30px;
+}
+
+#result-text {
+    font-size: 18px;
+    font-weight: bold;
+    color: #4caf50;
+    margin-bottom: 20px;
+}
+
+.error-text {
+    color: #d9534f;
     margin-top: 20px;
-    padding: 20px;
-    background-color: #e8f6f3;
-    border: 1px solid #d1e8e2;
-    border-radius: 8px;
+    font-weight: bold;
 }
+
