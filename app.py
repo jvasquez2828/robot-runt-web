@@ -44,6 +44,10 @@ async def consultar_vehiculo(page, placa, num_doc):
         # Usamos los timeouts agresivos que funcionaban bien.
         await page.goto(URL_CONSULTA, wait_until='domcontentloaded', timeout=15000)
         
+        # --- LÓGICA DE ESPERA PACIENTE ---
+        # Espera a que el primer campo del formulario esté listo antes de interactuar.
+        await page.wait_for_selector("//input[@formcontrolname='placa']", timeout=10000)
+        
         await page.fill("//input[@formcontrolname='placa']", placa)
         await page.click("//mat-select[@formcontrolname='tipoDocumento']")
         await page.click("//mat-option//span[contains(text(), 'NIT')]")
@@ -215,3 +219,4 @@ def download_file():
 # This block is needed for Render to start the web server
 if __name__ == '__main__':
     app.run()
+
